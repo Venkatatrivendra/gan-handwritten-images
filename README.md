@@ -10,10 +10,14 @@ This project implements a Deep Convolutional Generative Adversarial Network (DCG
 - Plotly visualizations for loss curves and training details
 - Generated image gallery with download support
 - Beginner-friendly project guide, architecture overview, and dataset explorer
+- Separate MNIST CNN for uploading, preprocessing, and recognizing handwritten digits
 
 ## Project structure
 - `app.py` — the Streamlit dashboard and front-end experience
 - `gan_mnist.py` — DCGAN model architecture, training logic, checkpointing, and generation utilities
+- `digit_recognition.py` — standalone CNN architecture, upload preprocessing, and classifier loading
+- `train_digit_classifier.py` — MNIST CNN training and test evaluation
+- `checkpoints/mnist_cnn.pt` — trained digit-classifier weights and measured metrics
 - `requirements.txt` — dependency list
 - `data/` — downloaded MNIST dataset cache
 - `checkpoints/` — model checkpoints saved during training
@@ -25,6 +29,16 @@ This project implements a Deep Convolutional Generative Adversarial Network (DCG
    `./.venv/Scripts/Activate.ps1`
 2. Start the app:
    `streamlit run app.py`
+
+The upload-and-recognition page loads `checkpoints/mnist_cnn.pt` and does not train
+the classifier when a user opens the app. To train or retrain it locally, run:
+`python train_digit_classifier.py`
+
+The classifier uses the MNIST test split for evaluation and saves its measured
+training loss, test loss, and test accuracy in its checkpoint. Commit that
+checkpoint to the same repository so Streamlit Community Cloud can load it.
+The included checkpoint was trained for 3 epochs and measured a final training
+loss of 0.0332, test loss of 0.0305, and test accuracy of 99.01%.
 
 ## Deploy publicly with Streamlit Community Cloud
 1. Push this project to a public GitHub repository.

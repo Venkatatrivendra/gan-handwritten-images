@@ -1,3 +1,4 @@
+from hashlib import sha256
 import json
 from pathlib import Path
 
@@ -6,12 +7,19 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 import torch
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 
+from digit_recognition import (
+    decode_uploaded_image,
+    load_classifier_checkpoint,
+    preprocess_digit_image,
+)
 from gan_mnist import DCGAN, ensure_directories, save_run_metadata
 
 
 st.set_page_config(page_title="GAN MNIST Dashboard", page_icon="🧠", layout="wide")
+
+CLASSIFIER_CHECKPOINT = Path(__file__).resolve().parent / "checkpoints" / "mnist_cnn.pt"
 
 
 def apply_custom_styles():
@@ -858,6 +866,116 @@ def render_about_page():
     st.markdown("</div>", unsafe_allow_html=True)
 
 
+@st.cache_resource
+def load_digit_classifier(checkpoint_path: str):
+    return load_classifier_checkpoint(checkpoint_path)
+
+
+def reset_digit_upload():
+    st.session_state["digit_upload_generation"] += 1
+    st.session_state.pop("digit_prediction", None)
+
+
+def render_upload_recognize_page():
+    st.title("Upload & Recognize")
+    st.caption(
+        "Upload a clear image of one handwritten digit (0–9). The separate CNN "
+        "classifies the preprocessed image; confidence is a model estimate, not a guarantee."
+    )
+
+    try:
+        classifier, _ = load_digit_classifier(str(CLASSIFIER_CHECKPOINT))
+    except FileNotFoundError:
+        classifier = None
+        st.warning(
+            "The digit-classifier checkpoint is not available. Run "
+            "`python train_digit_classifier.py` and include "
+            "`checkpoints/mnist_cnn.pt` in the deployed repository."
+        )
+    except (OSError, RuntimeError, ValueError, KeyError) as exc:
+        classifier = None
+        st.error(f"The digit-classifier checkpoint could not be loaded: {exc}")
+
+    st.session_state.setdefault("digit_upload_generation", 0)
+    uploaded_file = st.file_uploader(
+        "Choose a PNG, JPG, or JPEG image",
+        type=["png", "jpg", "jpeg"],
+        key=f"digit_upload_{st.session_state.digit_upload_generation}",
+        help="Upload one image containing a single handwritten digit.",
+    )
+    if uploaded_file is None:
+        return
+
+    uploaded_bytes = uploaded_file.getvalue()
+    try:
+        original = decode_uploaded_image(uploaded_bytes)
+        processed, image_tensor = preprocess_digit_image(original)
+    except (UnidentifiedImageError, OSError, ValueError) as exc:
+        st.error(f"Image could not be preprocessed: {exc}")
+        return
+
+    preview_cols = st.columns(2)
+    with preview_cols[0]:
+        st.subheader("Original image")
+        st.image(original, use_container_width=True)
+    with preview_cols[1]:
+        st.subheader("Processed 28 × 28 image")
+        st.image(processed, width=224)
+        st.caption("Grayscale → polarity normalized to MNIST → cropped → aspect-preserving resize → centered.")
+
+    with st.expander("Preprocessing details"):
+        st.write(
+            "The background polarity is estimated from the image border, then the "
+            "detected digit is cropped, fitted inside a 22 × 22 area, and centered "
+            "by its ink mass on a black 28 × 28 canvas. This matches the bright-digit "
+            "on dark-background polarity in the torchvision MNIST training data. "
+            "Pixels are converted to a tensor and normalized with the MNIST training "
+            "mean (0.1307) and standard deviation (0.3081)."
+        )
+
+    upload_id = sha256(uploaded_bytes).hexdigest()
+    if st.button("Recognize Digit", type="primary", disabled=classifier is None):
+        try:
+            with torch.inference_mode():
+                logits = classifier(image_tensor.unsqueeze(0))
+                probabilities = torch.softmax(logits, dim=1)[0].cpu().numpy()
+            st.session_state["digit_prediction"] = {
+                "upload_id": upload_id,
+                "digit": int(np.argmax(probabilities)),
+                "probabilities": probabilities.tolist(),
+            }
+        except (RuntimeError, ValueError) as exc:
+            st.error(f"Recognition failed: {exc}")
+
+    result = st.session_state.get("digit_prediction")
+    if result and result.get("upload_id") == upload_id:
+        digit = result["digit"]
+        probabilities = np.asarray(result["probabilities"], dtype=float)
+        result_cols = st.columns([1, 2])
+        with result_cols[0]:
+            st.metric("Predicted digit", digit)
+            st.metric("Model confidence", f"{probabilities[digit] * 100:.2f}%")
+        with result_cols[1]:
+            st.subheader("Probability by digit")
+            figure = go.Figure(go.Bar(
+                x=[str(value) for value in range(10)],
+                y=probabilities * 100,
+                marker_color="#8b5cf6",
+            ))
+            figure.update_layout(
+                xaxis_title="Digit",
+                yaxis_title="Model probability (%)",
+                yaxis=dict(range=[0, 100]),
+                template="plotly_dark",
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                margin=dict(l=20, r=20, t=10, b=20),
+            )
+            st.plotly_chart(figure, use_container_width=True)
+
+    st.button("Upload another image", on_click=reset_digit_upload)
+
+
 def app_main():
     apply_custom_styles()
     initialize_session_state()
@@ -873,6 +991,7 @@ def app_main():
         "Training Analytics",
         "Image Gallery",
         "About Project",
+        "Upload & Recognize",
     ], key="page_navigation", label_visibility="collapsed")
 
     pages = {
@@ -884,6 +1003,7 @@ def app_main():
         "Image Gallery": render_gallery_page,
         "Dataset Explorer": render_dataset_page,
         "About Project": render_about_page,
+        "Upload & Recognize": render_upload_recognize_page,
     }
 
     pages.get(page, render_dashboard)()
